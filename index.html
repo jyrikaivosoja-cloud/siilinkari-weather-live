@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Siilinkari Wind</title>
+<style>
+  /* Layout: header with station + status, three stat tiles, two stacked charts (speed/gust, direction). */
+  :root {
+    --bg: #f3f6f7; --panel: #ffffff; --fg: #15232b; --muted: #5d7079; --grid: #dbe3e6;
+    --speed: #0b6e8a; --gust: #d4570f; --dir: #4f5fb3; --warn: #b3261e;
+    --font: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1a20; --panel: #16252d; --fg: #e5eef1; --muted: #8ea3ad; --grid: #26383f;
+      --speed: #4cc3e0; --gust: #ff9b57; --dir: #9aa8f0; --warn: #ff8a80; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1a20; --panel: #16252d; --fg: #e5eef1; --muted: #8ea3ad; --grid: #26383f;
+    --speed: #4cc3e0; --gust: #ff9b57; --dir: #9aa8f0; --warn: #ff8a80; color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 15px; line-height: 1.45;
+         padding-block: 20px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  main { max-width: 980px; margin: 0 auto; display: grid; gap: 16px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; }
+  h1 { font-size: 1.5rem; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 0.85rem; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile, .chart { background: var(--panel); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  .tile .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .tile .value { font-size: 1.9rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile .unit { font-size: 0.9rem; color: var(--muted); font-weight: 400; margin-left: 2px; }
+  .tile .note { font-size: 0.8rem; color: var(--muted); }
+  .chart h2 { font-size: 1rem; margin: 0 0 8px; display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center; }
+  .key { font-size: 0.8rem; color: var(--muted); font-weight: 400; display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+  svg { width: 100%; height: auto; display: block; }
+  svg text { fill: var(--muted); font-size: 11px; font-family: var(--font); font-variant-numeric: tabular-nums; }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .l-speed { fill: none; stroke: var(--speed); stroke-width: 1.8; stroke-linejoin: round; }
+  .l-gust { fill: none; stroke: var(--gust); stroke-width: 1.4; stroke-linejoin: round; }
+  .a-speed { fill: var(--speed); opacity: 0.12; }
+  .d-dir { fill: var(--dir); }
+  .end-speed { fill: var(--speed); } .end-gust { fill: var(--gust); }
+  #status { font-size: 0.85rem; color: var(--muted); }
+  #status.err { color: var(--warn); }
+  details { font-size: 0.82rem; color: var(--muted); }
+  details code { word-break: break-all; }
+  footer { font-size: 0.78rem; color: var(--muted); }
+  a { color: var(--speed); }
+  button { font: inherit; background: var(--panel); color: var(--fg); border: 1px solid var(--grid); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--speed); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Siilinkari wind</h1>
+      <div class="sub">Tampere · FMI weather station · last 2 hours, 1-minute data</div>
+    </div>
+    <div><span id="status">Loading…</span> <button id="refresh" type="button">Refresh</button></div>
+  </header>
+
+  <section class="tiles" aria-label="Latest values">
+    <div class="tile"><div class="label">Wind speed</div><div class="value"><span id="t-speed">–</span><span class="unit">m/s</span></div><div class="note" id="n-speed">&nbsp;</div></div>
+    <div class="tile"><div class="label">Gust</div><div class="value"><span id="t-gust">–</span><span class="unit">m/s</span></div><div class="note" id="n-gust">&nbsp;</div></div>
+    <div class="tile"><div class="label">Direction</div><div class="value"><span id="t-dir">–</span><span class="unit">°</span></div><div class="note" id="n-dir">&nbsp;</div></div>
+  </section>
+
+  <section class="chart">
+    <h2>Wind speed and gusts
+      <span class="key"><span class="sw" style="background:var(--speed)"></span>Speed</span>
+      <span class="key"><span class="sw" style="background:var(--gust)"></span>Gust</span>
+    </h2>
+    <svg id="c-speed" viewBox="0 0 900 300" role="img" aria-label="Wind speed and gust, last two hours"></svg>
+  </section>
+
+  <section class="chart">
+    <h2>Wind direction <span class="key">degrees the wind blows from</span></h2>
+    <svg id="c-dir" viewBox="0 0 900 260" role="img" aria-label="Wind direction, last two hours"></svg>
+  </section>
+
+  <details>
+    <summary>Data source and settings</summary>
+    <p>Source: Finnish Meteorological Institute open data (WFS, stored query <code>fmi::observations::weather::timevaluepair</code>), licence CC BY 4.0. Times are shown in Helsinki time. The page refreshes every minute.</p>
+    <p>Request URL: <code id="url"></code></p>
+  </details>
+  <footer>Contains data from the Finnish Meteorological Institute, licensed CC BY 4.0.</footer>
+</main>
+
+<script>
+/* ---------- Settings ---------- */
+const CONFIG = {
+  place: 'Tampere Siilinkari',      // FMI place name. Replace with fmisid below if you know it.
+  fmisid: null,                     // e.g. 101311. When set, it is used instead of place.
+  hours: 2,
+  timestep: 1,                      // minutes
+  params: { speed: 'windspeedms', gust: 'windgust', dir: 'winddirection' },
+  refreshMs: 60000,
+  tz: 'Europe/Helsinki'
+};
+const BASE = 'https://opendata.fmi.fi/wfs';
+
+/* ---------- Fetch and parse ---------- */
+function buildUrl(now) {
+  const iso = d => new Date(d).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const start = new Date(now - CONFIG.hours * 3600e3);
+  start.setSeconds(0, 0);
+  const q = new URLSearchParams({
+    service: 'WFS', version: '2.0.0', request: 'getFeature',
+    storedquery_id: 'fmi::observations::weather::timevaluepair',
+    starttime: iso(start), endtime: iso(now),
+    timestep: String(CONFIG.timestep),
+    parameters: Object.values(CONFIG.params).join(',')
+  });
+  if (CONFIG.fmisid) q.set('fmisid', CONFIG.fmisid);
+  else { q.set('place', CONFIG.place); q.set('maxlocations', '1'); }
+  return BASE + '?' + q.toString();
+}
+
+/* Returns { paramName: [{t: ms, v: number}] } from a timevaluepair XML string. */
+function parseTVP(xml) {
+  const out = {};
+  const seriesRe = /<wml2:MeasurementTimeseries\b[^>]*gml:id="([^"]*)"[^>]*>([\s\S]*?)<\/wml2:MeasurementTimeseries>/g;
+  let m;
+  while ((m = seriesRe.exec(xml))) {
+    const name = m[1].split('-').pop().toLowerCase();
+    const pts = [];
+    const tvpRe = /<wml2:time>([^<]+)<\/wml2:time>\s*<wml2:value>([^<]*)<\/wml2:value>/g;
+    let p;
+    while ((p = tvpRe.exec(m[2]))) {
+      const v = parseFloat(p[2]);
+      const t = Date.parse(p[1]);
+      if (Number.isFinite(v) && Number.isFinite(t)) pts.push({ t, v });
+    }
+    out[name] = pts;
+  }
+  return out;
+}
+
+async function load() {
+  const now = Date.now();
+  const url = buildUrl(now);
+  document.getElementById('url').textContent = url;
+  const res = await fetch(url);
+  const text = await res.text();
+  if (!res.ok || /ExceptionReport/.test(text)) {
+    const msg = (text.match(/<ows:ExceptionText>([\s\S]*?)<\/ows:ExceptionText>/) || [])[1];
+    throw new Error(msg ? msg.trim().slice(0, 200) : 'FMI returned HTTP ' + res.status);
+  }
+  const data = parseTVP(text);
+  const get = k => data[CONFIG.params[k].toLowerCase()] || [];
+  return { speed: get('speed'), gust: get('gust'), dir: get('dir'), now };
+}
+
+/* ---------- Drawing ---------- */
+const NS = 'http://www.w3.org/2000/svg';
+const M = { l: 44, r: 16, t: 12, b: 26 };
+function el(name, attrs, text) {
+  const e = document.createElementNS(NS, name);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  return e;
+}
+const fmtTime = t => new Date(t).toLocaleTimeString('fi-FI', { hour: '2-digit', minute: '2-digit', timeZone: CONFIG.tz });
+
+function frame(svg, t0, t1, yMin, yMax, yTicks, yLabel) {
+  svg.replaceChildren();
+  const W = 900, H = +svg.getAttribute('viewBox').split(' ')[3];
+  const x = t => M.l + (t - t0) / (t1 - t0) * (W - M.l - M.r);
+  const y = v => H - M.b - (v - yMin) / (yMax - yMin) * (H - M.t - M.b);
+  yTicks.forEach(v => {
+    svg.append(el('line', { class: 'gridline', x1: M.l, x2: W - M.r, y1: y(v), y2: y(v) }));
+    svg.append(el('text', { x: M.l - 6, y: y(v) + 4, 'text-anchor': 'end' }, yLabel(v)));
+  });
+  // x ticks every 15 minutes
+  const step = 15 * 60e3;
+  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+    svg.append(el('line', { class: 'gridline', x1: x(t), x2: x(t), y1: M.t, y2: H - M.b }));
+    svg.append(el('text', { x: x(t), y: H - 8, 'text-anchor': 'middle' }, fmtTime(t)));
+  }
+  return { x, y, W, H };
+}
+
+function niceMax(v) {
+  const steps = [2, 4, 6, 8, 10, 12, 15, 20, 25, 30, 40];
+  return steps.find(s => s >= v) || Math.ceil(v / 10) * 10;
+}
+
+function drawSpeed(d) {
+  const svg = document.getElementById('c-speed');
+  const t1 = d.now, t0 = d.now - CONFIG.hours * 3600e3;
+  const maxV = niceMax(Math.max(1, ...d.speed.map(p => p.v), ...d.gust.map(p => p.v)));
+  const n = 4, ticks = Array.from({ length: n + 1 }, (_, i) => maxV * i / n);
+  const f = frame(svg, t0, t1, 0, maxV, ticks, v => (Math.round(v * 10) / 10) + '');
+  svg.append(el('text', { x: 4, y: 10 }, 'm/s'));
+  const path = pts => pts.map((p, i) => (i ? 'L' : 'M') + f.x(p.t).toFixed(1) + ' ' + f.y(p.v).toFixed(1)).join('');
+  // break the line where data has gaps of more than 3 minutes
+  const segments = pts => {
+    const segs = []; let cur = [];
+    pts.forEach((p, i) => { if (i && p.t - pts[i - 1].t > 3 * 60e3) { segs.push(cur); cur = []; } cur.push(p); });
+    if (cur.length) segs.push(cur);
+    return segs;
+  };
+  segments(d.speed).forEach(s => {
+    if (s.length > 1) svg.append(el('path', { class: 'a-speed', d: path(s) + `L${f.x(s[s.length - 1].t)} ${f.y(0)}L${f.x(s[0].t)} ${f.y(0)}Z` }));
+  });
+  segments(d.gust).forEach(s => svg.append(el('path', { class: 'l-gust', d: path(s) })));
+  segments(d.speed).forEach(s => svg.append(el('path', { class: 'l-speed', d: path(s) })));
+  const last = (pts, cls) => { const p = pts[pts.length - 1]; if (p) svg.append(el('circle', { class: cls, cx: f.x(p.t), cy: f.y(p.v), r: 3.5 })); };
+  last(d.gust, 'end-gust'); last(d.speed, 'end-speed');
+}
+
+function drawDir(d) {
+  const svg = document.getElementById('c-dir');
+  const t1 = d.now, t0 = d.now - CONFIG.hours * 3600e3;
+  const names = { 0: 'N', 90: 'E', 180: 'S', 270: 'W', 360: 'N' };
+  const f = frame(svg, t0, t1, 0, 360, [0, 90, 180, 270, 360], v => names[v] + ' ' + v + '°');
+  d.dir.forEach(p => svg.append(el('circle', { class: 'd-dir', cx: f.x(p.t), cy: f.y(((p.v % 360) + 360) % 360), r: 2.3 })));
+}
+
+/* ---------- Summary tiles ---------- */
+const compass = deg => ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'][Math.round(deg / 22.5) % 16];
+function setTile(id, value, note) {
+  document.getElementById('t-' + id).textContent = value;
+  document.getElementById('n-' + id).innerHTML = note || '&nbsp;';
+}
+function summarize(d) {
+  const last = a => a[a.length - 1];
+  const s = last(d.speed), g = last(d.gust), r = last(d.dir);
+  const avg = d.speed.length ? d.speed.reduce((a, p) => a + p.v, 0) / d.speed.length : null;
+  const maxG = d.gust.length ? Math.max(...d.gust.map(p => p.v)) : null;
+  setTile('speed', s ? s.v.toFixed(1) : '–', s ? `at ${fmtTime(s.t)} · 2 h avg ${avg.toFixed(1)}` : 'no data');
+  setTile('gust', g ? g.v.toFixed(1) : '–', g ? `2 h max ${maxG.toFixed(1)}` : 'no data');
+  setTile('dir', r ? Math.round(r.v) : '–', r ? compass(r.v) : 'no data');
+}
+
+/* ---------- Run ---------- */
+const statusEl = document.getElementById('status');
+async function refresh() {
+  statusEl.className = ''; statusEl.textContent = 'Updating…';
+  try {
+    const d = await load();
+    if (!d.speed.length && !d.gust.length && !d.dir.length) {
+      throw new Error('FMI returned no observations for this station and parameters. Check CONFIG.place / fmisid and CONFIG.params in the page source.');
+    }
+    summarize(d); drawSpeed(d); drawDir(d);
+    const newest = Math.max(0, ...[d.speed, d.gust, d.dir].map(a => a.length ? a[a.length - 1].t : 0));
+    statusEl.textContent = 'Latest observation ' + fmtTime(newest);
+  } catch (e) {
+    statusEl.className = 'err';
+    statusEl.textContent = 'Could not load data: ' + e.message;
+  }
+}
+document.getElementById('refresh').addEventListener('click', refresh);
+refresh();
+setInterval(refresh, CONFIG.refreshMs);
+</script>
+</body>
+</html>
